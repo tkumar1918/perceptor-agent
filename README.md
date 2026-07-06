@@ -35,40 +35,41 @@ From the platform operator, you need two things:
 
 ---
 
-## Setup (3 steps)
-
-### 1. Pull it onto the VM
+## Setup — one command
 
 ```bash
 git clone https://github.com/tkumar1918/perceptor-agent.git
 cd perceptor-agent
+./install.sh
 ```
 
-### 2. Configure `.env`
+`install.sh` checks Docker is ready, asks you the **three values** below, writes a
+private `.env` (mode 600), and starts the agent. It's safe to re-run.
+
+| Value | What it is | Where it comes from |
+|---|---|---|
+| **Edge URL** | the project's OTLP ingest URL | your platform operator, e.g. `https://lgtm.runtheday.com` |
+| **Project token** | this project's ingest token (**keep secret**) | `tenants.secrets.yaml` on the central server |
+| **VM name** | a name for THIS machine (becomes the `vm` label) | you pick it — role + index, e.g. `project-alpha-web-1` |
+
+That's it. It begins collecting immediately and picks up new containers on the
+host automatically. From then on, manage it with `make` (`make logs`, `make
+status`, `make down`, `make update`) or plain `docker compose`.
+
+<details>
+<summary><b>Prefer to do it by hand?</b> (no script)</summary>
 
 ```bash
-cp .env.example .env
-```
-
-Edit `.env` and set the three values:
-
-```ini
-EDGE_ENDPOINT=https://lgtm.runtheday.com   # the project's ingest URL
-PROJECT_TOKEN=ptk_xxxxxxxxxxxxxxxxxxxxxxxx  # this project's token (keep secret)
-VM_NAME=project-alpha-web-1                 # a name for THIS machine
-```
-
-`VM_NAME` becomes the `vm` label on everything this agent sends — pick something
-that identifies the box (its role + an index).
-
-### 3. Start it
-
-```bash
+cp .env.example .env         # then edit the three values in it
 docker compose up -d
 ```
 
-That's it. It begins collecting immediately and picks up new containers on the
-host automatically.
+Non-interactive / automation — feed the values as env vars and the script won't prompt:
+
+```bash
+EDGE_ENDPOINT=https://lgtm.runtheday.com PROJECT_TOKEN=ptk_xxx VM_NAME=project-alpha-web-1 ./install.sh
+```
+</details>
 
 ---
 
