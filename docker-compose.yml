@@ -14,6 +14,12 @@ services:
     image: grafana/alloy:v1.17.1
     container_name: perceptor-agent
     restart: unless-stopped
+    # Safety caps so the agent can never starve the app it shares the VM with,
+    # even under a pathological scrape/log loop. Steady state is ~220MB / a few
+    # %% CPU. On a small VM lower `cpus`; on a container-dense host raise
+    # `mem_limit` (cadvisor memory scales with container count).
+    mem_limit: 512m
+    cpus: 2
     command:
       - run
       - /etc/alloy/config.alloy

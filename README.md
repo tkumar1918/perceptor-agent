@@ -139,6 +139,7 @@ To update to the latest agent: `git pull && docker compose up -d`.
 | `Exporting failed ... connection refused / no such host` | `EDGE_ENDPOINT` unreachable — check the URL and the VM's outbound HTTPS. |
 | No **container** metrics/logs (host ones fine) | The container-stats mounts didn't attach. Ensure the VM has `/run/containerd/containerd.sock` and `/sys/fs/cgroup` (both mounted by the compose); on non-containerd runtimes adjust the socket paths in `config.alloy`. |
 | Nothing at all in Grafana | Confirm you're on the **project's** org/datasources and that `vm=` matches your `VM_NAME` exactly. |
+| `entry ... timestamp too old` in the logs on **first start** | Expected, harmless. On first deploy the agent backfills each container's recent stdout; lines older than the platform's reject window (~7 days) are refused while everything current flows normally. It stops on its own once caught up. |
 
 ---
 
