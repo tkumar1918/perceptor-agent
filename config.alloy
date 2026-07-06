@@ -49,6 +49,14 @@ prometheus.relabel "infra" {
 		source_labels = ["name"]
 		target_label  = "container"
 	}
+
+	// Stable identity: by default `instance` is this container's hex id, which
+	// changes every recreate — churning EVERY series in the project's tenant.
+	// Pin it to the VM name; `job` still separates the unix vs cadvisor exporters.
+	rule {
+		target_label = "instance"
+		replacement  = coalesce(sys.env("VM_NAME"), "unknown-vm")
+	}
 }
 
 otelcol.receiver.prometheus "infra" {
