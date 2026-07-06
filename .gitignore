@@ -1,0 +1,7 @@
+# The per-VM secret/config — never commit it.
+.env
+.env.*
+!.env.example
+
+# Alloy local storage, if a run leaves anything behind.
+data/
