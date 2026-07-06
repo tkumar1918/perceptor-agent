@@ -82,7 +82,7 @@ loki.source.journal "host" {
 	forward_to    = [otelcol.receiver.loki.infra.receiver]
 }
 
-// ── Container logs (docker) — low-touch: all containers, opt-out via label ──
+// ── Container logs (docker) — OPT-IN: only containers that ask to be collected ──
 discovery.docker "containers" {
 	host = "unix:///var/run/docker.sock"
 }
@@ -94,17 +94,23 @@ discovery.relabel "containers" {
 	// amplify into a runaway feedback loop the moment the edge backpressures:
 	// export fails -> logs an error -> reads that error back in -> exports it ->
 	// fails -> ... (this pegged a whole host at 800%+ CPU in testing). Drop self.
+	// (Also excluded by the opt-in keep below — this is a belt-and-braces guard.)
 	rule {
 		source_labels = ["__meta_docker_container_name"]
 		regex         = "/perceptor-agent"
 		action        = "drop"
 	}
 
-	// Opt-OUT: exclude a container with label  perceptor.enable=false
+	// OPT-IN: collect a container's logs ONLY if it explicitly sets
+	//   labels: { perceptor.enable: "true" }   in its own compose.
+	// A `keep` drops every target whose label doesn't match — so by default,
+	// with no label, a container's stdout is NEVER scraped. This is deliberate:
+	// on a shared VM you don't want to slurp third-party/app logs (which may hold
+	// secrets or PII) just because a container exists. Owners opt in per service.
 	rule {
 		source_labels = ["__meta_docker_container_label_perceptor_enable"]
-		regex         = "false"
-		action        = "drop"
+		regex         = "true"
+		action        = "keep"
 	}
 	// Optional self-declared identity
 	rule {

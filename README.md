@@ -83,24 +83,31 @@ docker compose logs -f agent
 
 **In the project's Grafana** — after ~30s, on the project's datasources:
 
-- **Loki:** `{telemetry_source="infra", vm="<your VM_NAME>"}` → host + container logs
+- **Loki:** `{telemetry_source="infra", vm="<your VM_NAME>"}` → host (journald) logs, plus any container that opted in
 - **Mimir:** `node_uname_info{vm="<your VM_NAME>"}` → host metrics are flowing
-- **Mimir (containers):** `container_last_seen{vm="<your VM_NAME>"}` → per-container metrics
+- **Mimir (containers):** `container_last_seen{vm="<your VM_NAME>"}` → per-container metrics (all containers)
 
 ---
 
-## Per-container control (optional)
+## Per-container control — logs are opt-in
 
-Every container is collected by default (opt-out model) — you never edit the
-agent to onboard a container. Containers self-describe from **their own** compose,
-Traefik-style:
+Container **logs are collected only if a container opts in.** By default nothing's
+stdout is scraped — so the agent never slurps a third-party or app container's logs
+(which may hold secrets or PII) just because it happens to run on the VM. A service
+opts in from **its own** compose, Traefik-style — no edit to the agent:
 
 ```yaml
 # in the application's docker-compose, on its service:
 labels:
-  perceptor.enable: "false"           # exclude this container entirely
-  perceptor.service_name: "checkout"  # set its service_name (else the container name is used)
+  perceptor.enable: "true"            # collect THIS container's logs (required to opt in)
+  perceptor.service_name: "checkout"  # optional: set its service_name (else the container name is used)
 ```
+
+To stop collecting, remove the label (or set it to anything but `"true"`).
+
+> Scope: this gate is for **container logs**. Host/system logs (journald), host
+> metrics, and per-container resource **metrics** (cadvisor) are always collected —
+> they're non-sensitive infra vitals and are the whole point of running the agent.
 
 ---
 
