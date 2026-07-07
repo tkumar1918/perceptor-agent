@@ -112,16 +112,25 @@ discovery.relabel "containers" {
 		regex         = "true"
 		action        = "keep"
 	}
-	// Optional self-declared identity
-	rule {
-		source_labels = ["__meta_docker_container_label_perceptor_service_name"]
-		target_label  = "service_name"
-	}
-	// Fallback identity
+	// Identity. Always set `container`, and default `service_name` to the container
+	// name too — so a container that opts in but never declares perceptor.service_name
+	// still gets a real name instead of collapsing into Loki's `unknown_service`.
 	rule {
 		source_labels = ["__meta_docker_container_name"]
 		regex         = "/(.*)"
 		target_label  = "container"
+	}
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "service_name"
+	}
+	// A declared perceptor.service_name overrides the default. regex "(.+)" matches
+	// only a non-empty value, so an absent label leaves the default untouched.
+	rule {
+		source_labels = ["__meta_docker_container_label_perceptor_service_name"]
+		regex         = "(.+)"
+		target_label  = "service_name"
 	}
 }
 
@@ -133,6 +142,38 @@ loki.source.docker "containers" {
 }
 
 otelcol.receiver.loki "infra" {
+	output {
+		logs = [otelcol.processor.groupbyattrs.svc.input]
+	}
+}
+
+// Give each container's logs their OWN resource, keyed by the identity labels.
+// (loki.source.docker emits per-container streams; groupbyattrs promotes these
+// attributes to the resource level so the next step can set a per-container
+// service.name without one container's value clobbering another's.)
+otelcol.processor.groupbyattrs "svc" {
+	keys = ["service_name"]
+	output {
+		logs = [otelcol.processor.transform.svc.input]
+	}
+}
+
+// THE service.name FIX. Loki derives its indexed `service_name` label from the
+// OTLP RESOURCE attribute `service.name`, and defaults to `unknown_service` when
+// it's absent. The relabel above set a `service_name` *log label*, which crosses
+// OTLP as a log-record attribute and COLLIDES with Loki's reserved name — so Loki
+// keeps its own (`unknown_service`, collapsing every container into one) and
+// renames ours to `service_name_extracted`. Fix: hoist it to the resource
+// `service.name` (falling back to the container name), and drop the colliding key.
+otelcol.processor.transform "svc" {
+	error_mode = "ignore"
+	log_statements {
+		context = "resource"
+		statements = [
+			`set(resource.attributes["service.name"], resource.attributes["service_name"])`,
+			`delete_key(resource.attributes, "service_name")`,
+		]
+	}
 	output {
 		logs = [otelcol.processor.attributes.tag.input]
 	}
