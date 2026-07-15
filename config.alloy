@@ -19,6 +19,17 @@ prometheus.exporter.unix "host" {
 	procfs_path = "/host/proc"
 	sysfs_path  = "/host/sys"
 
+	// Two opt-in node_exporter collectors (off by default):
+	//   systemd   — per-unit state: is nginx.service / the app's unit up, dead,
+	//               or failed? It reads this over the host's D-Bus socket, so it
+	//               needs the /run/dbus/system_bus_socket mount (see compose) —
+	//               without it the collector loads but emits nothing.
+	//   processes — aggregate process/thread COUNTS (running, blocked, zombies)
+	//               from /host/proc. NOT a per-process list — no pid/name/cpu.
+	//               For "which process is hot" on a Dockerised box, cadvisor's
+	//               per-container metrics are the right tool.
+	enable_collectors = ["systemd", "processes"]
+
 	filesystem {
 		mount_points_exclude = "^/(dev|proc|sys|host/proc|host/sys|run|var/lib/docker/.+)($|/)"
 		fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs)$"
@@ -30,6 +41,14 @@ prometheus.exporter.cadvisor "containers" {
 	docker_host            = "unix:///var/run/docker.sock"
 	docker_only            = true
 	store_container_labels = false
+
+	// store_container_labels=false drops ALL container labels from metrics (they
+	// are a classic cardinality bomb). Let exactly ONE back through: the env
+	// marker, so dev and prod containers can be told apart on a shared VM. The
+	// allowlist is the surgical alternative to turning every label back on.
+	// cadvisor exposes it as the metric label container_label_perceptor_environment,
+	// which prometheus.relabel.infra normalizes to `environment` below.
+	allowlisted_container_labels = ["perceptor.environment"]
 }
 
 // ── Scrape both, give containers a `container` label, hand off to OTLP ─────
@@ -48,6 +67,37 @@ prometheus.relabel "infra" {
 	rule {
 		source_labels = ["name"]
 		target_label  = "container"
+	}
+
+	// environment (dev/prod), so a shared VM's dev and prod containers separate
+	// cleanly. Prefer the EXPLICIT compose label perceptor.environment (surfaced
+	// as container_label_perceptor_environment by the cadvisor allowlist); if
+	// it's absent, best-effort a dev/prod token from the container name. The
+	// explicit label always wins: the fallback rules are gated on `environment`
+	// still being empty (they match only when the joined value starts with the
+	// separator), and a token must be delimiter-bounded so `development` or
+	// `code-server` don't get mislabelled.
+	rule {
+		source_labels = ["container_label_perceptor_environment"]
+		regex         = "(.+)"
+		target_label  = "environment"
+	}
+	rule {
+		source_labels = ["environment", "container"]
+		regex         = ";(.*[-_.])?dev([-_.].*)?"
+		target_label  = "environment"
+		replacement   = "dev"
+	}
+	rule {
+		source_labels = ["environment", "container"]
+		regex         = ";(.*[-_.])?prod([-_.].*)?"
+		target_label  = "environment"
+		replacement   = "prod"
+	}
+	// Drop the raw cadvisor label now it's normalized into `environment`.
+	rule {
+		regex  = "container_label_perceptor_environment"
+		action = "labeldrop"
 	}
 
 	// Stable identity: by default `instance` is this container's hex id, which
@@ -132,12 +182,52 @@ discovery.relabel "containers" {
 		regex         = "(.+)"
 		target_label  = "service_name"
 	}
+
+	// environment (dev/prod) — same derivation as the metrics path, so a log
+	// line and its container's metrics carry the same label. Explicit compose
+	// label preferred; dev/prod name-token fallback, gated on `environment`
+	// still being empty. (docker container names arrive with a leading "/",
+	// harmlessly absorbed by the fallback's leading .* )
+	rule {
+		source_labels = ["__meta_docker_container_label_perceptor_environment"]
+		regex         = "(.+)"
+		target_label  = "environment"
+	}
+	rule {
+		source_labels = ["environment", "__meta_docker_container_name"]
+		regex         = ";(.*[-_.])?dev([-_.].*)?"
+		target_label  = "environment"
+		replacement   = "dev"
+	}
+	rule {
+		source_labels = ["environment", "__meta_docker_container_name"]
+		regex         = ";(.*[-_.])?prod([-_.].*)?"
+		target_label  = "environment"
+		replacement   = "prod"
+	}
 }
 
 loki.source.docker "containers" {
 	host       = "unix:///var/run/docker.sock"
 	targets    = discovery.relabel.containers.output
 	labels     = { job = "docker" }
+	forward_to = [otelcol.receiver.loki.infra.receiver]
+}
+
+// ── nginx host logs (files) — ONLY if nginx runs as a HOST service ─────────
+// nginx writes access/error logs to /var/log/nginx/*.log; when it runs on the
+// host (not in a container) those never reach docker/journald, so we tail them
+// off the mounted host root. A containerised nginx is already covered by
+// loki.source.docker above — this is purely for the host-service case, and is a
+// harmless no-op on a VM with no such files. Mirrors the journald pattern: a
+// `job` label only, no service_name (host-service logs, not a project
+// container), so they ride the same OTLP path into the infra tenant.
+local.file_match "nginx" {
+	path_targets = [{ __path__ = "/host/root/var/log/nginx/*.log", job = "nginx" }]
+}
+
+loki.source.file "nginx" {
+	targets    = local.file_match.nginx.targets
 	forward_to = [otelcol.receiver.loki.infra.receiver]
 }
 

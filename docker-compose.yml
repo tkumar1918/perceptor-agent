@@ -38,6 +38,9 @@ services:
       - /:/host/root:ro,rslave
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro
+      # systemd collector (node exporter) talks to systemd over the host D-Bus
+      # socket — without this mount it loads but reports no unit state.
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
       - /var/lib/docker/:/var/lib/docker/:ro
       - /var/log/journal:/var/log/journal:ro
       - /etc/machine-id:/etc/machine-id:ro
