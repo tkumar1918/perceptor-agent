@@ -123,6 +123,23 @@ discovery.relabel "journal" {
 		source_labels = ["__journal__systemd_unit"]
 		target_label  = "unit"
 	}
+
+	// Without this, host/journal logs land in Loki as `unknown_service` — they
+	// carry no service_name, unlike container logs (which default it to the
+	// container name). Give them one: the systemd unit (e.g. sshd.service),
+	// falling back to a fixed `systemd-journal` for unit-less entries (kernel,
+	// early boot). It crosses OTLP as service_name and the shared transform below
+	// hoists it to resource service.name — the exact path the container logs use.
+	rule {
+		source_labels = ["__journal__systemd_unit"]
+		target_label  = "service_name"
+	}
+	rule {
+		source_labels = ["service_name"]
+		regex         = "^$"
+		target_label  = "service_name"
+		replacement   = "systemd-journal"
+	}
 }
 
 loki.source.journal "host" {
@@ -219,11 +236,11 @@ loki.source.docker "containers" {
 // host (not in a container) those never reach docker/journald, so we tail them
 // off the mounted host root. A containerised nginx is already covered by
 // loki.source.docker above — this is purely for the host-service case, and is a
-// harmless no-op on a VM with no such files. Mirrors the journald pattern: a
-// `job` label only, no service_name (host-service logs, not a project
-// container), so they ride the same OTLP path into the infra tenant.
+// harmless no-op on a VM with no such files. Rides the same OTLP path into the
+// infra tenant, tagged job=nginx and service_name=nginx (so it gets a real name
+// instead of Loki's unknown_service, same as the journal path above).
 local.file_match "nginx" {
-	path_targets = [{ __path__ = "/host/root/var/log/nginx/*.log", job = "nginx" }]
+	path_targets = [{ __path__ = "/host/root/var/log/nginx/*.log", job = "nginx", service_name = "nginx" }]
 }
 
 loki.source.file "nginx" {
