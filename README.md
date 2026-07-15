@@ -18,6 +18,48 @@ person) clones it onto a VM, fills in three values, and starts it.
 
 ---
 
+## Which token does this VM use?
+
+The agent carries **exactly one token**, and that token alone decides which
+tenant this VM's infra lands in. Choosing it — by how the box is shared — is the
+only real decision in deploying the agent:
+
+| The VM belongs to… | Put this token in `.env` | Infra shows up in… |
+|---|---|---|
+| **one project** (dedicated VM) | that **project's** token | the project's own tenant, beside its app telemetry — nothing else to set up |
+| **several projects** (shared box) | the group's **`_infra-<group>`** token | a shared infra tenant, visible from *every* one of those projects' Grafana |
+
+**Dedicated VM — the common case.** Use the project's `PROJECT_TOKEN`. Host and
+container infra land in that project's tenant, and the project's existing Grafana
+org already shows it. Nothing to configure on the platform. The rest of this
+README assumes this case.
+
+**Shared VM — several projects on one box.** There is only *one* agent per host,
+carrying *one* token, so "each project's token" isn't an option. Giving it project
+A's token would file project B's containers under A's tenant — and leave B unable
+to see its own machine. Use a **group** instead:
+
+1. **On the platform**, add a reserved tenant `_infra-<group>` and set
+   `group: <group>` on each project that shares the box (see the platform's
+   `tenants.example.yaml`), then `make render`.
+2. **Here**, use the **`_infra-<group>`** token as `PROJECT_TOKEN` — from
+   `tenants.secrets.yaml`, the `_infra-<group>` line, **not** any project's line.
+3. Each of those projects' Grafana orgs then gains a read-only infra datasource —
+   and the infra dashboard pre-wired to it — pointing at the shared tenant. So
+   everyone on the box can see the box, and no project's tenant is polluted with
+   another's data.
+
+> **Rule of thumb:** the tenant is the visibility boundary, and one token = one
+> tenant. If more than one project must see this VM's infra, it needs its own
+> group tenant — don't reuse a project's token to "share" a box.
+
+On a shared VM the [opt-in log gate](#per-container-control--logs-are-opt-in)
+matters even more: only containers that set `perceptor.enable: "true"` have their
+logs collected, so one project's app logs never flow just because it happens to
+run on the same host.
+
+---
+
 ## Prerequisites
 
 On the VM:
@@ -31,7 +73,7 @@ From the platform operator, you need two things:
 | Value | What it is | Where it comes from |
 |---|---|---|
 | `EDGE_ENDPOINT` | The OTLP/HTTP ingest URL — the **same** URL the project's apps already push telemetry to. | The platform's public edge, e.g. `https://lgtm.runtheday.com` |
-| `PROJECT_TOKEN` | **This project's** ingest token. The edge maps it to the tenant; the VM never names its own tenant. | The central server's `tenants.secrets.yaml`, the line for this project. **Treat it like a password.** |
+| `PROJECT_TOKEN` | The ingest token: **this project's** for a dedicated VM, or the **`_infra-<group>`** token for a shared box ([which one?](#which-token-does-this-vm-use)). The edge maps it to the tenant; the VM never names its own tenant. | The central server's `tenants.secrets.yaml`, the matching line. **Treat it like a password.** |
 
 ---
 
@@ -49,7 +91,7 @@ private `.env` (mode 600), and starts the agent. It's safe to re-run.
 | Value | What it is | Where it comes from |
 |---|---|---|
 | **Edge URL** | the project's OTLP ingest URL | your platform operator, e.g. `https://lgtm.runtheday.com` |
-| **Project token** | this project's ingest token (**keep secret**) | `tenants.secrets.yaml` on the central server |
+| **Project token** | this project's ingest token — or the `_infra-<group>` token on a shared VM ([which?](#which-token-does-this-vm-use)) (**keep secret**) | `tenants.secrets.yaml` on the central server |
 | **VM name** | a name for THIS machine (becomes the `vm` label) | you pick it — role + index, e.g. `project-alpha-web-1` |
 
 That's it. It begins collecting immediately and picks up new containers on the
