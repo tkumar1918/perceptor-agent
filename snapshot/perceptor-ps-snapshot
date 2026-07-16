@@ -13,9 +13,16 @@
 # `comm` (not `args`) is deliberate: full argv can leak secrets passed on the
 # command line (tokens, passwords) straight into the log backend.
 #
-# The `tac` is load-bearing: journald timestamps each line as it's printed and
-# Grafana's log panel sorts newest-first, so emitting rank 20 -> 01 makes each
-# snapshot render 01 -> 20 (hottest first) instead of upside down.
+# Emitted rank 01 -> 20, i.e. `journalctl -u perceptor-ps-snapshot` reads
+# hottest-first, top-down. Do NOT reorder this to game a log panel's sort: all
+# ~20 lines are printed in one burst and journald timestamps at millisecond
+# resolution, so most of a snapshot lands on the SAME timestamp and no
+# time-based sort can order it. Ordering belongs to the reader, and the
+# dashboard does it properly by sorting a table on the parsed `cpu` field.
+#
+# `snapshot=` repeats on every line by design: it is the only reliable way to
+# tell which snapshot a line belongs to, precisely because the journald
+# timestamps collide.
 set -eu
 
 TOP_N="${TOP_N:-20}"
@@ -33,5 +40,4 @@ ps -eo pid,ppid,user,pcpu,pmem,rss,etime,comm --sort=-pcpu \
   | awk -v ts="$ts" '{
       printf "snapshot=%s rank=%02d pid=%s user=%s cpu=%s mem=%s rss_kb=%s etime=%s comm=%s\n", \
              ts, NR, $1, $3, $4, $5, $6, $7, $8
-    }' \
-  | tac
+    }'
