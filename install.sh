@@ -146,5 +146,9 @@ $(say "Done — the agent is running.")
   Container LOGS are opt-in: add  labels: { perceptor.enable: "true" }  to a
   service in its own compose to ship that container's logs. Metrics are automatic.
 
-  Manage it:  make logs | make status | make down | make update
+  Process snapshot (top-20 by CPU, every 2m -> the "Host at a glance" dashboard):
+      systemctl status perceptor-ps-snapshot.timer   -> installed and waiting?
+      make snapshot                                  -> install it if it was skipped
+
+  Manage it:  make logs | make status | make down | make update | make snapshot
 EOF

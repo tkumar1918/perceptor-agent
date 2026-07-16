@@ -66,7 +66,12 @@ On the VM:
 
 - **Docker Engine + Compose plugin** (`docker compose version` works).
 - **Outbound HTTPS** to the platform edge (e.g. `https://lgtm.runtheday.com`).
-- Root/sudo (the agent mounts host paths read-only to read host + container stats).
+- Permission to talk to the Docker daemon — the `docker` group is enough. The
+  agent reads host paths via read-only **container mounts**, so it needs no root
+  of its own.
+- **sudo is optional**, and only for the [process snapshot](#the-process-snapshot-installed-automatically-needs-root)
+  (a systemd timer). Without it the agent still installs and runs fully — you
+  just don't get the snapshot panel.
 
 From the platform operator, you need two things:
 
@@ -153,6 +158,21 @@ docker compose logs -f agent
 - **Loki:** `{telemetry_source="infra", vm="<your VM_NAME>"}` → host (journald) logs, plus any container that opted in
 - **Mimir:** `node_uname_info{vm="<your VM_NAME>"}` → host metrics are flowing
 - **Mimir (containers):** `container_last_seen{vm="<your VM_NAME>"}` → per-container metrics (all containers)
+- **Mimir (systemd):** `node_systemd_unit_state{vm="<your VM_NAME>"}` → unit states (what powers *Failed units*)
+- **Loki (snapshot):** `{job="systemd-journal", vm="<your VM_NAME>"} | container=""` `|= "snapshot="` → the process snapshot, if installed
+
+Check the timer itself on the VM:
+
+```bash
+systemctl status perceptor-ps-snapshot.timer          # active/waiting?
+journalctl -u perceptor-ps-snapshot.service -n 5      # see the last snapshot
+```
+
+> **Filtering infra logs by container?** Use a `|` label filter, **not** the `{}`
+> selector: `{job="docker", vm="..."} | container="x"`. Only
+> `job`/`service_name`/`telemetry_source`/`vm` are real Loki stream labels on this
+> OTLP path — `container` arrives as *structured metadata*, so putting it inside
+> `{}` silently matches **zero** lines instead of erroring.
 
 ---
 
@@ -199,9 +219,15 @@ App telemetry (the project's own SDK signals) does **not** carry
 docker compose up -d      # apply changes to config.alloy or .env
 docker compose down       # stop
 docker stats perceptor-agent
+make snapshot             # (re)install the process-snapshot timer — needs sudo
 ```
 
-To update to the latest agent: `git pull && docker compose up -d`.
+To update to the latest agent: `git pull && docker compose up -d` (or `make update`).
+
+> `docker compose down` stops the **agent** only. The process-snapshot timer is a
+> host systemd unit and keeps running — it just writes to journald with nobody
+> shipping it. To stop it too:
+> `sudo systemctl disable --now perceptor-ps-snapshot.timer`.
 
 ---
 
