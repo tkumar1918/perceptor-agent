@@ -20,6 +20,10 @@ person) clones it onto a VM, fills in three values, and starts it.
 
 ## Which token does this VM use?
 
+> Full picture of how tenant / token / service_name / vm relate — including
+> "is a token per-service or per-project?" (per-project) — lives in the
+> platform repo: `docs/identity-model.md`.
+
 The agent carries **exactly one token**, and that token alone decides which
 tenant this VM's infra lands in. Choosing it — by how the box is shared — is the
 only real decision in deploying the agent:
