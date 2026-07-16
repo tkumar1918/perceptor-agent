@@ -98,6 +98,30 @@ That's it. It begins collecting immediately and picks up new containers on the
 host automatically. From then on, manage it with `make` (`make logs`, `make
 status`, `make down`, `make update`) or plain `docker compose`.
 
+### The process snapshot (installed automatically, needs root)
+
+`install.sh` also installs a **systemd timer** that writes a top-20-by-CPU `ps`
+snapshot to journald every 2 minutes. The agent already tails journald, so it
+flows to your Grafana with no extra config and fills the *Process snapshot*
+panel on the **Host at a glance (htop-style)** dashboard — letting you scroll
+back and ask *"what was running at 14:05?"*.
+
+It's a **log, not metrics**, deliberately: per-process metrics are a cardinality
+bomb (a series per PID, and PIDs churn constantly). ~20 short lines every 2
+minutes is flat cardinality instead.
+
+This is the one step that needs **root**, so sudo may prompt. It is strictly
+best-effort — the agent itself needs no root, so if you can't sudo, the install
+still succeeds and you simply get no snapshot panel.
+
+```bash
+SKIP_SNAPSHOT=1 ./install.sh   # don't install it at all
+make snapshot                  # install/re-install it later, on its own
+```
+
+It logs only the command name (`comm`), never the full argv — command lines
+routinely carry secrets (tokens, passwords) that must not land in a log backend.
+
 <details>
 <summary><b>Prefer to do it by hand?</b> (no script)</summary>
 

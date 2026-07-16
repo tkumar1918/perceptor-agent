@@ -1,0 +1,37 @@
+#!/bin/sh
+# Perceptor — periodic process snapshot to journald (htop-style, as LOGS).
+#
+# Prints the top-N processes by CPU as logfmt lines on stdout. systemd captures
+# stdout -> journald -> the Alloy agent's loki.source.journal (already running),
+# so this needs NO agent config change. Lands in Loki as:
+#   {job="systemd-journal", service_name="perceptor-ps-snapshot.service"}
+#
+# WHY a log and not a metric: per-process metrics are a cardinality bomb — one
+# series per process per VM, and PIDs churn constantly. As a periodic log line
+# it's flat cardinality: ~20 short lines per run, and it's queryable/greppable.
+#
+# `comm` (not `args`) is deliberate: full argv can leak secrets passed on the
+# command line (tokens, passwords) straight into the log backend.
+#
+# The `tac` is load-bearing: journald timestamps each line as it's printed and
+# Grafana's log panel sorts newest-first, so emitting rank 20 -> 01 makes each
+# snapshot render 01 -> 20 (hottest first) instead of upside down.
+set -eu
+
+TOP_N="${TOP_N:-20}"
+ts=$(date -Is)
+
+# Exclude our OWN pipeline, or it wins every snapshot: ps computes %CPU over a
+# process's lifetime, and ps has just been born, so it always reports ~100% and
+# would permanently hold rank 01. Filter by PID (self + our direct children:
+# ps/awk/tac), NOT by command name — blacklisting "awk" would hide a real awk
+# the box is actually running.
+ps -eo pid,ppid,user,pcpu,pmem,rss,etime,comm --sort=-pcpu \
+  | tail -n +2 \
+  | awk -v self="$$" '$1 != self && $2 != self' \
+  | head -n "$TOP_N" \
+  | awk -v ts="$ts" '{
+      printf "snapshot=%s rank=%02d pid=%s user=%s cpu=%s mem=%s rss_kb=%s etime=%s comm=%s\n", \
+             ts, NR, $1, $3, $4, $5, $6, $7, $8
+    }' \
+  | tac

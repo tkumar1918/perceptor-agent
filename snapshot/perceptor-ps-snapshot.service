@@ -1,0 +1,21 @@
+[Unit]
+Description=Perceptor — process snapshot (htop-style) to journald
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/perceptor-ps-snapshot
+
+# stdout -> systemd -> journald -> Alloy's loki.source.journal (already running).
+# No agent config change needed. Lands in Loki as:
+#   {job="systemd-journal", service_name="perceptor-ps-snapshot.service"}
+
+# Taking the snapshot must never be the reason a box struggles.
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=5%
+
+# It only reads /proc and writes to stdout — give it nothing else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true

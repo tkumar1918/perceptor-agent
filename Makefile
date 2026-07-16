@@ -8,6 +8,9 @@ help: ## Show this help
 install: ## First-time setup (asks for the 3 values, writes .env, starts it)
 	@./install.sh
 
+snapshot: ## (Re)install the periodic process-snapshot timer — needs root
+	@./install.sh --snapshot-only
+
 up: ## Start (or apply .env / config.alloy changes)
 	docker compose up -d
 
@@ -24,4 +27,4 @@ status: ## Show container + resource usage
 update: ## Pull the latest agent version and restart
 	git pull --ff-only && docker compose pull && docker compose up -d
 
-.PHONY: help install up down logs status update
+.PHONY: help install snapshot up down logs status update

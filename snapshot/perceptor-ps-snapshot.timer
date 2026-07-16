@@ -1,0 +1,13 @@
+[Unit]
+Description=Take a Perceptor process snapshot every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+# Let systemd batch this with other timers instead of waking the CPU precisely
+# on the minute — it's a snapshot, 10s of drift is irrelevant.
+AccuracySec=10s
+Unit=perceptor-ps-snapshot.service
+
+[Install]
+WantedBy=timers.target
