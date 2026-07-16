@@ -24,7 +24,13 @@ status: ## Show container + resource usage
 	@docker compose ps
 	@docker stats --no-stream perceptor-agent 2>/dev/null || true
 
-update: ## Pull the latest agent version and restart
+update: ## Pull the latest agent version and restart (also refreshes the snapshot script)
 	git pull --ff-only && docker compose pull && docker compose up -d
+	@# Re-install the snapshot only if it's already installed — git pull updates
+	@# the repo copy but NOT /usr/local/bin, which otherwise drifts stale forever.
+	@# Best-effort (may prompt for sudo); never fails the update.
+	@if [ -f /usr/local/bin/perceptor-ps-snapshot ]; then \
+		./install.sh --snapshot-only || echo "snapshot refresh skipped — run 'make snapshot' manually"; \
+	fi
 
 .PHONY: help install snapshot up down logs status update

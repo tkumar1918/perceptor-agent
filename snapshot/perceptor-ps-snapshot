@@ -26,6 +26,11 @@
 set -eu
 
 TOP_N="${TOP_N:-20}"
+# Validate: a non-numeric TOP_N would make `head -n` abort the whole unit.
+case "$TOP_N" in
+  ''|*[!0-9]*) echo "perceptor-ps-snapshot: TOP_N must be a positive integer (got '$TOP_N')" >&2; exit 1 ;;
+esac
+
 ts=$(date -Is)
 
 # Exclude our OWN pipeline, or it wins every snapshot: ps computes %CPU over a
@@ -33,11 +38,17 @@ ts=$(date -Is)
 # would permanently hold rank 01. Filter by PID (self + our direct children:
 # ps/awk/tac), NOT by command name — blacklisting "awk" would hide a real awk
 # the box is actually running.
+# comm is the LAST column on purpose: it can contain spaces ("tmux: server",
+# Firefox's "Web Content"), so it must be reassembled from field 8 to NF —
+# whitespace-splitting on $8 alone truncated those names. Spaces are joined
+# with "_" to keep the value a single logfmt token (parsers split on spaces).
 ps -eo pid,ppid,user,pcpu,pmem,rss,etime,comm --sort=-pcpu \
   | tail -n +2 \
   | awk -v self="$$" '$1 != self && $2 != self' \
   | head -n "$TOP_N" \
   | awk -v ts="$ts" '{
+      comm = $8
+      for (i = 9; i <= NF; i++) comm = comm "_" $i
       printf "snapshot=%s rank=%02d pid=%s user=%s cpu=%s mem=%s rss_kb=%s etime=%s comm=%s\n", \
-             ts, NR, $1, $3, $4, $5, $6, $7, $8
+             ts, NR, $1, $3, $4, $5, $6, $7, comm
     }'
