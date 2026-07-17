@@ -1,92 +1,20 @@
 # Perceptor VM agent
 
-Deploy this on a **project's VM** to ship that machine's **host + container**
-infra (metrics *and* logs) into the **project's own tenant** on the Perceptor
-platform, so it sits next to the project's app telemetry and correlates with it —
-without being mistaken for it (everything is tagged `telemetry_source=infra`).
+Deploy this on a project's VM to ship the machine's host and container infra
+— metrics and logs — into the project's tenant on the
+[Perceptor platform](https://github.com/tkumar1918/perceptor-platform), where
+it correlates with the project's app telemetry without being mistaken for it
+(everything is tagged `telemetry_source=infra`).
 
-This repo is the **standalone, pullable agent bundle**. A bootstrap tool (or a
-person) clones it onto a VM, fills in three values, and starts it.
+- **One agent per VM.** A project on several VMs deploys it on each, with a
+  unique `VM_NAME` per machine. One agent sees every container on the host,
+  regardless of how many Compose stacks run there.
+- **Push, outbound only.** The agent dials out to the platform edge over
+  HTTPS and opens no inbound ports.
+- **No central config change.** Onboarding a VM, or a new container on it,
+  needs nothing edited on the platform server.
 
-- **One agent per VM.** If a project runs on several VMs, deploy it on each and
-  give each a unique `VM_NAME`. It does **not** matter how many Docker Compose
-  stacks run on the box — one agent sees every container on the host.
-- **Push, outbound only.** The agent dials *out* to the platform edge over
-  HTTPS. It opens **no inbound ports**; nothing needs to reach the VM.
-- **No central config change.** Onboarding a VM (or a new container on it) needs
-  nothing edited on the central server.
-
----
-
-## Which token does this VM use?
-
-> Full picture of how tenant / token / service_name / vm relate — including
-> "is a token per-service or per-project?" (per-project) — lives in the
-> platform repo: `docs/identity-model.md`.
-
-The agent carries **exactly one token**, and that token alone decides which
-tenant this VM's infra lands in. Choosing it — by how the box is shared — is the
-only real decision in deploying the agent:
-
-| The VM belongs to… | Put this token in `.env` | Infra shows up in… |
-|---|---|---|
-| **one project** (dedicated VM) | that **project's** token | the project's own tenant, beside its app telemetry — nothing else to set up |
-| **several projects** (shared box) | the group's **`_infra-<group>`** token | a shared infra tenant, visible from *every* one of those projects' Grafana |
-
-**Dedicated VM — the common case.** Use the project's `PROJECT_TOKEN`. Host and
-container infra land in that project's tenant, and the project's existing Grafana
-org already shows it. Nothing to configure on the platform. The rest of this
-README assumes this case.
-
-**Shared VM — several projects on one box.** There is only *one* agent per host,
-carrying *one* token, so "each project's token" isn't an option. Giving it project
-A's token would file project B's containers under A's tenant — and leave B unable
-to see its own machine. Use a **group** instead:
-
-1. **On the platform**, add a reserved tenant `_infra-<group>` and set
-   `group: <group>` on each project that shares the box (see the platform's
-   `tenants.example.yaml`), then `make render`.
-2. **Here**, use the **`_infra-<group>`** token as `PROJECT_TOKEN` — from
-   `tenants.secrets.yaml`, the `_infra-<group>` line, **not** any project's line.
-3. Each of those projects' Grafana orgs then gains a read-only infra datasource —
-   and the infra dashboard pre-wired to it — pointing at the shared tenant. So
-   everyone on the box can see the box, and no project's tenant is polluted with
-   another's data.
-
-> **Rule of thumb:** the tenant is the visibility boundary, and one token = one
-> tenant. If more than one project must see this VM's infra, it needs its own
-> group tenant — don't reuse a project's token to "share" a box.
-
-On a shared VM the [opt-in log gate](#per-container-control--logs-are-opt-in)
-matters even more: only containers that set `perceptor.enable: "true"` have their
-logs collected, so one project's app logs never flow just because it happens to
-run on the same host.
-
----
-
-## Prerequisites
-
-On the VM:
-
-- **Docker Engine + Compose plugin** (`docker compose version` works).
-- **Outbound HTTPS** to the platform edge (e.g. `https://lgtm.runtheday.com`).
-- Permission to talk to the Docker daemon — the `docker` group is enough. The
-  agent reads host paths via read-only **container mounts**, so it needs no root
-  of its own.
-- **sudo is optional**, and only for the [process snapshot](#the-process-snapshot-installed-automatically-needs-root)
-  (a systemd timer). Without it the agent still installs and runs fully — you
-  just don't get the snapshot panel.
-
-From the platform operator, you need two things:
-
-| Value | What it is | Where it comes from |
-|---|---|---|
-| `EDGE_ENDPOINT` | The OTLP/HTTP ingest URL — the **same** URL the project's apps already push telemetry to. | The platform's public edge, e.g. `https://lgtm.runtheday.com` |
-| `PROJECT_TOKEN` | The ingest token: **this project's** for a dedicated VM, or the **`_infra-<group>`** token for a shared box ([which one?](#which-token-does-this-vm-use)). The edge maps it to the tenant; the VM never names its own tenant. | The central server's `tenants.secrets.yaml`, the matching line. **Treat it like a password.** |
-
----
-
-## Setup — one command
+## Setup
 
 ```bash
 git clone https://github.com/tkumar1918/perceptor-agent.git
@@ -94,159 +22,183 @@ cd perceptor-agent
 ./install.sh
 ```
 
-`install.sh` checks Docker is ready, asks you the **three values** below, writes a
-private `.env` (mode 600), and starts the agent. It's safe to re-run.
+`install.sh` checks Docker is ready, prompts for the three values below,
+writes a private `.env` (mode 600), starts the agent, and installs the
+[process snapshot](#the-process-snapshot) (the one optional step that needs
+sudo). It's safe to re-run.
 
 | Value | What it is | Where it comes from |
 |---|---|---|
-| **Edge URL** | the project's OTLP ingest URL | your platform operator, e.g. `https://lgtm.runtheday.com` |
-| **Project token** | this project's ingest token — or the `_infra-<group>` token on a shared VM ([which?](#which-token-does-this-vm-use)) (**keep secret**) | `tenants.secrets.yaml` on the central server |
-| **VM name** | a name for THIS machine (becomes the `vm` label) | you pick it — role + index, e.g. `project-alpha-web-1` |
+| Edge URL | the OTLP ingest URL — the same URL the project's apps push to | the platform operator, e.g. `https://lgtm.runtheday.com` |
+| Project token | the ingest token — see [Which token?](#which-token-does-this-vm-use). Treat it like a password | `tenants.secrets.yaml` on the platform server |
+| VM name | a name for this machine; becomes the `vm` label | you pick it — role + index, e.g. `project-alpha-web-1` |
 
-That's it. It begins collecting immediately and picks up new containers on the
-host automatically. From then on, manage it with `make` (`make logs`, `make
-status`, `make down`, `make update`) or plain `docker compose`.
-
-### The process snapshot (installed automatically, needs root)
-
-`install.sh` also installs a **systemd timer** that writes a top-20-by-CPU `ps`
-snapshot to journald every 2 minutes. The agent already tails journald, so it
-flows to your Grafana with no extra config and fills the *Process snapshot*
-panel on the **Host at a glance (htop-style)** dashboard — letting you scroll
-back and ask *"what was running at 14:05?"*.
-
-It's a **log, not metrics**, deliberately: per-process metrics are a cardinality
-bomb (a series per PID, and PIDs churn constantly). ~20 short lines every 2
-minutes is flat cardinality instead.
-
-This is the one step that needs **root**, so sudo may prompt. It is strictly
-best-effort — the agent itself needs no root, so if you can't sudo, the install
-still succeeds and you simply get no snapshot panel.
-
-```bash
-SKIP_SNAPSHOT=1 ./install.sh   # don't install it at all
-make snapshot                  # install/re-install it later, on its own
-```
-
-It logs only the command name (`comm`), never the full argv — command lines
-routinely carry secrets (tokens, passwords) that must not land in a log backend.
-
-<details>
-<summary><b>Prefer to do it by hand?</b> (no script)</summary>
-
-```bash
-cp .env.example .env         # then edit the three values in it
-docker compose up -d
-```
-
-Non-interactive / automation — feed the values as env vars and the script won't prompt:
+The agent starts collecting immediately and picks up new containers
+automatically. Non-interactive install (no prompts):
 
 ```bash
 EDGE_ENDPOINT=https://lgtm.runtheday.com PROJECT_TOKEN=ptk_xxx VM_NAME=project-alpha-web-1 ./install.sh
 ```
-</details>
 
----
+Or by hand, without the script: `cp .env.example .env`, edit the three
+values, `docker compose up -d`.
+
+### Prerequisites
+
+- Docker Engine + Compose plugin (`docker compose version` works).
+- Outbound HTTPS to the platform edge.
+- Permission to talk to the Docker daemon (the `docker` group is enough —
+  the agent reads host paths via read-only container mounts and needs no
+  root of its own).
+- sudo is optional, used only for the process snapshot. Without it the
+  install still succeeds; you just don't get the snapshot panel.
+
+## Which token does this VM use?
+
+The agent carries exactly one token, and that token alone decides which
+tenant the whole machine's infra lands in. Choosing it is the only real
+deploy decision:
+
+| The VM belongs to… | Put this token in `.env` | Infra shows up in |
+|---|---|---|
+| one project (dedicated VM) | that project's token | the project's own tenant, beside its app telemetry |
+| several projects (shared box) | the group's `_infra-<group>` token | a shared infra tenant, visible from every one of those projects' Grafana |
+
+**Dedicated VM — the common case.** Use the project's token; the project's
+existing Grafana org already shows the machine. Nothing to configure on the
+platform.
+
+**Shared VM.** One agent, one token — so "each project's token" isn't an
+option, and using project A's token would file project B's containers under
+A. Use a group instead:
+
+1. On the platform, add a reserved tenant `_infra-<group>` and set
+   `group: <group>` on each project sharing the box (see the platform's
+   `tenants.example.yaml`), then `make render`.
+2. Here, use the `_infra-<group>` token as `PROJECT_TOKEN` — the
+   `_infra-<group>` line of `tenants.secrets.yaml`, not any project's line.
+3. Each of those projects' Grafana orgs gains a read-only infra datasource
+   (and the infra dashboards pre-wired to it) pointing at the shared tenant.
+
+Rule of thumb: the tenant is the visibility boundary, and one token = one
+tenant. If more than one project must see this VM's infra, it needs its own
+group tenant — don't reuse a project's token to "share" a box. The full
+identity scheme (tenant / token / service_name / vm) is documented in the
+platform repo's `docs/identity-model.md`.
+
+## Container logs are opt-in
+
+Container logs are collected only if a container opts in — by default no
+stdout is scraped, so the agent never slurps a third-party or app container's
+logs (which may hold secrets or PII) just because it runs on the same VM.
+A service opts in from its own compose file; the agent is never edited:
+
+```yaml
+# in the application's docker-compose, on its service:
+labels:
+  perceptor.enable: "true"            # collect THIS container's logs
+  perceptor.service_name: "checkout"  # optional; defaults to the container name
+```
+
+Remove the label (or set it to anything but `"true"`) to stop collecting.
+This gate applies to container **logs** only: host/system logs (journald),
+host metrics, and per-container resource metrics (cadvisor) are always
+collected — they're non-sensitive infra vitals and the point of the agent.
+On a shared VM this gate matters most: one project's app logs never flow
+just because it shares a host.
+
+## The process snapshot
+
+`install.sh` also installs a systemd timer that writes a top-20-by-CPU `ps`
+snapshot to journald every 2 minutes. The agent already tails journald, so
+the snapshot flows to Grafana with no extra config and fills the *Process
+snapshot* panel on the htop-style dashboard — letting you scroll back and ask
+"what was running at 14:05?".
+
+It is deliberately a log, not metrics: per-process metrics are a cardinality
+bomb (a series per PID, and PIDs churn), while ~20 short lines every 2
+minutes is flat. It logs only the command name (`comm`), never the full argv
+— command lines routinely carry secrets that must not land in a log backend.
+
+Installing the timer is the one step that needs root, and it is best-effort:
+if sudo isn't available the install still succeeds without it.
+
+```bash
+SKIP_SNAPSHOT=1 ./install.sh   # skip it entirely
+make snapshot                  # install/re-install it later (needs sudo)
+```
 
 ## Verify it's working
 
-**On the VM** — the logs should show it collecting and exporting, with **no**
-`Exporting failed` lines:
+On the VM — the agent log should show exporting with no `Exporting failed`
+lines:
 
 ```bash
 docker compose logs -f agent
 ```
 
-**In the project's Grafana** — after ~30s, on the project's datasources:
+In the project's Grafana, after ~30s:
 
-- **Loki:** `{telemetry_source="infra", vm="<your VM_NAME>"}` → host (journald) logs, plus any container that opted in
-- **Mimir:** `node_uname_info{vm="<your VM_NAME>"}` → host metrics are flowing
-- **Mimir (containers):** `container_last_seen{vm="<your VM_NAME>"}` → per-container metrics (all containers)
-- **Mimir (systemd):** `node_systemd_unit_state{vm="<your VM_NAME>"}` → unit states (what powers *Failed units*)
-- **Loki (snapshot):** `{job="systemd-journal", vm="<your VM_NAME>"} | container=""` `|= "snapshot="` → the process snapshot, if installed
+| Signal | Query |
+|---|---|
+| host (journald) logs | `{telemetry_source="infra", vm="<VM_NAME>"}` |
+| host metrics | `node_uname_info{vm="<VM_NAME>"}` |
+| container metrics | `container_last_seen{vm="<VM_NAME>"}` |
+| systemd unit states | `node_systemd_unit_state{vm="<VM_NAME>"}` |
+| process snapshot | `{job="systemd-journal", vm="<VM_NAME>"} \| container="" \|= "snapshot="` |
 
-Check the timer itself on the VM:
+And the snapshot timer itself:
 
 ```bash
 systemctl status perceptor-ps-snapshot.timer          # active/waiting?
-journalctl -u perceptor-ps-snapshot.service -n 5      # see the last snapshot
+journalctl -u perceptor-ps-snapshot.service -n 5      # the last snapshot
 ```
 
-> **Filtering infra logs by container?** Use a `|` label filter, **not** the `{}`
+> **Filtering infra logs by container?** Use a `|` label filter, not the `{}`
 > selector: `{job="docker", vm="..."} | container="x"`. Only
-> `job`/`service_name`/`telemetry_source`/`vm` are real Loki stream labels on this
-> OTLP path — `container` arrives as *structured metadata*, so putting it inside
-> `{}` silently matches **zero** lines instead of erroring.
+> `job`/`service_name`/`telemetry_source`/`vm` are real Loki stream labels on
+> this path — `container` arrives as structured metadata, so putting it
+> inside `{}` silently matches zero lines instead of erroring.
 
----
+## What lands where
 
-## Per-container control — logs are opt-in
-
-Container **logs are collected only if a container opts in.** By default nothing's
-stdout is scraped — so the agent never slurps a third-party or app container's logs
-(which may hold secrets or PII) just because it happens to run on the VM. A service
-opts in from **its own** compose, Traefik-style — no edit to the agent:
-
-```yaml
-# in the application's docker-compose, on its service:
-labels:
-  perceptor.enable: "true"            # collect THIS container's logs (required to opt in)
-  perceptor.service_name: "checkout"  # optional: set its service_name (else the container name is used)
-```
-
-To stop collecting, remove the label (or set it to anything but `"true"`).
-
-> Scope: this gate is for **container logs**. Host/system logs (journald), host
-> metrics, and per-container resource **metrics** (cadvisor) are always collected —
-> they're non-sensitive infra vitals and are the whole point of running the agent.
-
----
-
-## What lands where, and how to query it
-
-Everything goes to the **project's tenant**, tagged `telemetry_source=infra` and
+Everything goes to the token's tenant, with `telemetry_source=infra` and
 `vm=<VM_NAME>` as real labels:
 
-- Isolate all infra from app telemetry: `{telemetry_source="infra"}`
-- One VM's logs: `{telemetry_source="infra", vm="project-alpha-web-1"}`
-- A container's infra logs **and** metrics share the same `container` label, so a
-  single Grafana dashboard variable filters both together.
+- all infra, isolated from app telemetry: `{telemetry_source="infra"}`
+- one VM: `{telemetry_source="infra", vm="project-alpha-web-1"}`
+- a container's infra logs and metrics share the same `container` label, so
+  one dashboard variable filters both together.
 
-App telemetry (the project's own SDK signals) does **not** carry
-`telemetry_source`, so the two never mix.
-
----
+App telemetry (the project's own SDK signals) never carries
+`telemetry_source`, so the two streams never mix.
 
 ## Operating it
 
 ```bash
-docker compose up -d      # apply changes to config.alloy or .env
-docker compose down       # stop
-docker stats perceptor-agent
-make snapshot             # (re)install the process-snapshot timer — needs sudo
+docker compose up -d          # apply changes to config.alloy or .env
+docker compose down           # stop the agent
+docker stats perceptor-agent  # resource usage
+make update                   # git pull + restart (+ refresh the snapshot if installed)
+make snapshot                 # (re)install the snapshot timer — needs sudo
 ```
 
-To update to the latest agent: `git pull && docker compose up -d` (or `make update`).
-
-> `docker compose down` stops the **agent** only. The process-snapshot timer is a
-> host systemd unit and keeps running — it just writes to journald with nobody
-> shipping it. To stop it too:
-> `sudo systemctl disable --now perceptor-ps-snapshot.timer`.
-
----
+`docker compose down` stops the agent only; the snapshot timer is a host
+systemd unit and keeps writing to journald (with nobody shipping it). To stop
+it too: `sudo systemctl disable --now perceptor-ps-snapshot.timer`.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| `Exporting failed ... 401` | Wrong or missing `PROJECT_TOKEN`. Check it against `tenants.secrets.yaml` on the central server. |
-| `Exporting failed ... connection refused / no such host` | `EDGE_ENDPOINT` unreachable — check the URL and the VM's outbound HTTPS. |
-| No **container** metrics/logs (host ones fine) | The container-stats mounts didn't attach. Ensure the VM has `/run/containerd/containerd.sock` and `/sys/fs/cgroup` (both mounted by the compose); on non-containerd runtimes adjust the socket paths in `config.alloy`. |
-| Nothing at all in Grafana | Confirm you're on the **project's** org/datasources and that `vm=` matches your `VM_NAME` exactly. |
-| `entry ... timestamp too old` in the logs on **first start** | Expected, harmless. On first deploy the agent backfills each container's recent stdout; lines older than the platform's reject window (~7 days) are refused while everything current flows normally. It stops on its own once caught up. |
+| `Exporting failed ... 401` | wrong or missing `PROJECT_TOKEN` — check it against `tenants.secrets.yaml` on the platform server |
+| `Exporting failed ... connection refused / no such host` | `EDGE_ENDPOINT` unreachable — check the URL and the VM's outbound HTTPS |
+| no container metrics/logs (host ones fine) | the container-stats mounts didn't attach — ensure `/run/containerd/containerd.sock` and `/sys/fs/cgroup` exist (both mounted by the compose); on non-containerd runtimes adjust the socket paths in `config.alloy` |
+| nothing at all in Grafana | confirm you're on the project's org/datasources and `vm=` matches your `VM_NAME` exactly |
+| `entry ... timestamp too old` on first start | expected and harmless — the agent backfills each container's recent stdout; lines older than the platform's reject window (~7 days) are refused while current data flows. It stops once caught up |
 
 ---
 
-Part of the [Perceptor](https://github.com/tkumar1918/perceptor-platform) platform.
-The central server also runs its own self-monitoring agent (writing to a reserved
+Part of the [Perceptor platform](https://github.com/tkumar1918/perceptor-platform).
+The platform server runs its own self-monitoring agent (writing to a reserved
 `_infra` tenant); this VM agent is the per-project counterpart.
